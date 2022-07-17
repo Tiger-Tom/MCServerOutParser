@@ -87,15 +87,15 @@ class MCParser:
                 }
     @staticmethod
     def fetch_and_preprocess_lang(jarpath: str, lcode: str) -> tuple[dict[str, str], dict[str, str]]:
-        srch = re.compile('META\-INF\/versions\/([0-9\.]+)\/server\-\\1\.jar')
+       #srch = re.compile('META\-INF\/versions\/(.+)\/server\-\\1\.jar')
         with zipfile.ZipFile(jarpath) as sJarZip:
-            versions = list(i for i in sJarZip.filelist if srch.match(i.filename))
-            for i in range(3):
-                big = max(versions, key=lambda x: x.filename.split('.')[i]).filename.split('.')[i]
-                versions = tuple(j for j in versions if j.filename.split('.')[i] == big)
-            with sJarZip.open(versions[0]) as vf:
-                with zipfile.ZipFile(vf) as zfvf:
-                    print(f'Extracting {jarpath}://{versions[0].filename}://assets/minecraft/lang/{lcode}.json')
+            #versions = list(i for i in sJarZip.filelist if srch.match(i.filename))
+            with sJarZip.open('META-INF/versions.list') as v:
+                version = v.read().decode().split('\n')[0].split('\t')[2]
+            ver = f'META-INF/versions/{version}'
+            with sJarZip.open(ver) as vf, zipfile.ZipFile(vf) as zfvf:
+                if True:
+                    print(f'Extracting {jarpath}://{ver}://assets/minecraft/lang/{lcode}.json')
                     jason = json.loads(zfvf.read(f'assets/minecraft/lang/{lcode}.json')).items()
                     return {
                         k: '^'+re.escape(v)+'$' for k,v in jason if k.split('.')[0] in {'multiplayer', 'advancement', 'death', 'connect', 'disconnect', 'dataPack', 'datapackFailure', 'chat'}
