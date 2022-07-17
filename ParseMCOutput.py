@@ -14,7 +14,7 @@ class MCParser:
     '''If assume_stderr_seperated is false, then we cannot assume that the stderr is seperated (A.E. for parsing server logs and not live output), so any unusual line that does not match any other pattern should be marked "assumed_error" and should return a "line"'''
     evalPrefix = 'EVAL_'
     regularize_death_vars = lambda x: x.replace('%1\\$s', '(?P<victim>.*)', 1).replace('%2\\$s', '(?P<culprit>.*)', 1).replace('%3\\$s', '(?P<using>.*)', 1).replace('%s', '(?P<unknown_field>.*)')
-    def __init__(self, jarpath='server.jar', lang_code='en_us', *, assume_stderr_seperated=False, custom_lang: None | tuple[dict[str, dict[str, re.Pattern]], tuple[dict[str, dict[str, re.Pattern]]], dict[str, re.Pattern], re.Pattern] =None):
+    def __init__(self, jarpath='server.jar', lang_code='en_us', *, assume_stderr_seperated=False, custom_lang: None | tuple[dict[str, dict[str, re.Pattern]], tuple[dict[str, dict[str, re.Pattern]]], dict[str, re.Pattern], re.Pattern, dict[str, str]] =None):
         # Get variables
         ## Set .jar path
         self.jarpath = jarpath
@@ -22,11 +22,11 @@ class MCParser:
         self.assume_stderr_seperated = assume_stderr_seperated
         # Fetch and compile language (unless custom_lang)
         if custom_lang is not None:
-            self.lang,self.lang_unusual,self._search = custom_lang
+            self.lang, self.lang_unusual, self._search, self.commands = custom_lang
         else:
-            self.lang,self.lang_unusual,self._search = self.compile_lang(jarpath, lang_code)
-    def compile_lang(self, jarpath: str, lcode='en_us') -> tuple[dict[str, dict[str, re.Pattern]], tuple[dict[str, dict[str, re.Pattern]]], dict[str, re.Pattern]]:
-        raw, rawDeath = self.fetch_and_preprocess_lang(jarpath, lcode)
+            self.lang,self.lang_unusual,self._search, self.commands = self.compile_lang(jarpath, lang_code)
+    def compile_lang(self, jarpath: str, lcode='en_us') -> tuple[dict[str, dict[str, re.Pattern]], tuple[dict[str, dict[str, re.Pattern]]], dict[str, re.Pattern], dict[str, str]]:
+        raw, rawDeath, commands = self.fetch_and_preprocess_lang(jarpath, lcode)
         lang_unusual = {
             'unpack_version': re.compile('^Unpacking (?P<packed>[0-9\w\.\-\/ ]+) \(versions:(?P<versions>.+)\) to (?P<file>[0-9\w\.\-\/ ]+)$'),
             'start_java_class': re.compile('^Starting (?P<class>[0-9\w\.]+)$'),
@@ -66,7 +66,7 @@ class MCParser:
         print('    '+('\n    '.join(f'{k}: {len(v)}' for k,v in lang.items())))
         # "{self.evalPrefix}" is stripped from the key by .check_line, and tells it to automatically cast the type using eval
         search = re.compile('^\[([0-9\:]+)\] \[(.+)\/(.+)\]: (.*)$', flags=re.MULTILINE)
-        return lang,lang_unusual,search
+        return lang, lang_unusual, search, commands
     def search_regex(self, pattern: re.Pattern, line: str, regexParentKey: str, regexSubKey: str) -> tuple[tuple[str, str], dict[str, ...]] | None:
         if mat := pattern.match(line):
             return (regexParentKey, regexSubKey), {
@@ -85,8 +85,17 @@ class MCParser:
                 return key, {
                     k if not k.startswith(self.evalPrefix) else k[len(self.evalPrefix):]: v if not k.startswith(self.evalPrefix) else ast.literal_eval(v) for k, v in mat.groupdict().items()
                 }
+    def parse_command_output(self, line: str, command: str, groupKeys: tuple[str]) -> dict[...] | None:
+        regx = f'^{self.commands[command]}$'
+        assert len(groupKeys) == regx.count('%s'), f'Incorrect amount of keys to match (expected {regx.count("%s")}, got {len(groupKeys)})'
+        if regx.count('%s') != 0:
+            for k in groupKeys:
+                regx = regx.replace('%s', k, 1)
+        print(regx)
+        if mat := re.match(regx, line):
+            return mat.groupdict()
     @staticmethod
-    def fetch_and_preprocess_lang(jarpath: str, lcode: str) -> tuple[dict[str, str], dict[str, str]]:
+    def fetch_and_preprocess_lang(jarpath: str, lcode: str) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
        #srch = re.compile('META\-INF\/versions\/(.+)\/server\-\\1\.jar')
         with zipfile.ZipFile(jarpath) as sJarZip:
             #versions = list(i for i in sJarZip.filelist if srch.match(i.filename))
@@ -98,9 +107,11 @@ class MCParser:
                     print(f'Extracting {jarpath}://{ver}://assets/minecraft/lang/{lcode}.json')
                     jason = json.loads(zfvf.read(f'assets/minecraft/lang/{lcode}.json')).items()
                     return {
-                        k: '^'+re.escape(v)+'$' for k,v in jason if k.split('.')[0] in {'multiplayer', 'advancement', 'death', 'connect', 'disconnect', 'dataPack', 'datapackFailure', 'chat'}
+                        k: f'^{re.escape(v)}$' for k,v in jason if k.split('.')[0] in {'multiplayer', 'advancement', 'death', 'connect', 'disconnect', 'dataPack', 'datapackFailure', 'chat'}
                     }, {
                         k: re.escape(v) for k,v in jason if k.split('.')[0] == 'death'
+                    }, {
+                        k: f'^{re.escape(v)}$' for k,v in jason if k.split('.')[0] in {'command', 'commands'}
                     }
     def parse_line(self, line: str) -> tuple[bool, tuple[str, str], tuple[tuple[[str, str], dict[str, ...]]] | None] | None:
         if match := self._search.match(line):
