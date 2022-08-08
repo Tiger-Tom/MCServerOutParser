@@ -26,7 +26,7 @@ class MCParser:
         else:
             self.lang,self.lang_unusual,self._search, self.commands = self.compile_lang(jarpath, lang_code)
     def compile_lang(self, jarpath: str, lcode='en_us') -> tuple[dict[str, dict[str, re.Pattern]], tuple[dict[str, dict[str, re.Pattern]]], dict[str, re.Pattern], dict[str, str]]:
-        raw, rawDeath, commands = self.fetch_and_preprocess_lang(jarpath, lcode)
+        raw, rawDeath, commands, self.version = self.fetch_and_preprocess_lang(jarpath, lcode)
         lang_unusual = {
             'unpack_version': re.compile('^Unpacking (?P<packed>[0-9\w\.\-\/ ]+) \(versions:(?P<versions>.+)\) to (?P<file>[0-9\w\.\-\/ ]+)$'),
             'start_java_class': re.compile('^Starting (?P<class>[0-9\w\.]+)$'),
@@ -36,12 +36,14 @@ class MCParser:
         print(f'Compiled {len(lang_unusual)} RegEx for lang_unusual (STDERR Mode: {"assume ignore" if self.assume_stderr_seperated else "do check"})\n{tuple(lang_unusual)}')
         regularize_death_vars = lambda x: x.replace('%1\\$s', '(?P<victim>.*)', 1).replace('%2\\$s', '(?P<culprit>.*)', 1).replace('%3\\$s', '(?P<using>.*)', 1).replace('%s', '(?P<unknown_field>.*)')
         lang = {
-            'chat': { # Pull any "chat.type.(text|emote|text.narrate|announcement|admin)"
+            'chat_insecure': {
+                i.split('.')[-1]: re.compile('^\[Not Secure\] '+raw[f'chat.type.{i}'][1:].replace('%s', '(?P<player>\w+)', 1).replace('%s', '(?P<message>.*)', 1)) for i in ('text', 'emote', 'text.narrate', 'announcement', 'admin')
+            }, 'chat': { # Pull any "chat.type.(text|emote|text.narrate|announcement|admin)"
                 i.split('.')[-1]: re.compile(raw[f'chat.type.{i}'].replace('%s', '(?P<player>\w+)', 1).replace('%s', '(?P<message>.*)', 1)) for i in ('text', 'emote', 'text.narrate', 'announcement', 'admin')
             }, 'advancement': { # Pull any "chat.type.advancement.(task|challenge|goal)"
                 i: re.compile(raw[f'chat.type.advancement.{i}'].replace('%s', '(?P<player>\w+)', 1).replace('%s', '(?P<advancement>.*)', 1)) for i in ('task', 'challenge', 'goal')
             }, 'join_leave': { # Pull any "multiplayer.player.joined*", "multiplayer.player.left"
-                'join': re.compile(raw['multiplayer.player.joined'].replace('%s', '(?P<player>\w+)', 1)),
+                'joined': re.compile(raw['multiplayer.player.joined'].replace('%s', '(?P<player>\w+)', 1)),
                 'renamed': re.compile(raw['multiplayer.player.joined.renamed'].replace('%s', '(?P<player>\w+)', 1).replace('%s', '(?P<old_name>\\w+)', 1)),
                 'left': re.compile(raw['multiplayer.player.left'].replace('%s', '(?P<player>\w+)', 1)),
                 'lost_connection': re.compile('^(?P<player>\w+) lost connection: (?P<reason>.*)$'),
@@ -95,10 +97,8 @@ class MCParser:
         if mat := re.match(regx, line):
             return mat.groupdict()
     @staticmethod
-    def fetch_and_preprocess_lang(jarpath: str, lcode: str) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
-       #srch = re.compile('META\-INF\/versions\/(.+)\/server\-\\1\.jar')
+    def fetch_and_preprocess_lang(jarpath: str, lcode: str) -> tuple[dict[str, str], dict[str, str], dict[str, str], str]:
         with zipfile.ZipFile(jarpath) as sJarZip:
-            #versions = list(i for i in sJarZip.filelist if srch.match(i.filename))
             with sJarZip.open('META-INF/versions.list') as v:
                 version = v.read().decode().split('\n')[0].split('\t')[2]
             ver = f'META-INF/versions/{version}'
@@ -112,27 +112,13 @@ class MCParser:
                         k: re.escape(v) for k,v in jason if k.split('.')[0] == 'death'
                     }, {
                         k: f'^{re.escape(v)}$' for k,v in jason if k.split('.')[0] in {'command', 'commands'}
-                    }
-    def parse_line(self, line: str) -> tuple[bool, tuple[str, str], tuple[tuple[[str, str], dict[str, ...]]] | None] | None:
+                    }, version.split('/')[0]
+    def parse_line(self, line: str) -> tuple[bool, str, tuple[str, str], tuple[tuple[[str, str], dict[str, ...]]] | None] | None:
         if match := self._search.match(line):
             if len(match.groups()) < 4:
                 return None
-            return False, (match.group(2), match.group(3)), self.check_line(match.group(4))
+            return False, match.group(4), (match.group(2), match.group(3)), self.check_line(match.group(4))
         return True, self.check_unusual_line(line)
-    def parse_lines(self, text: str) -> tuple[bool, tuple[str, str], tuple[tuple[[str, str], dict[str, ...]]]] | None:
+    def parse_lines(self, text: str) -> tuple[bool, str, tuple[str, str], tuple[tuple[[str, str], dict[str, ...]]]] | None:
         for i in text.split('\n'):
             yield self.parse_line(i)
-
-def time_func(func, iters, *args, **kwargs):
-    import time
-    ts = []
-    for i in range(iters):
-        t = time.perf_counter()
-        func(*args, **kwargs)
-        ts.append(time.perf_counter()-t)
-    return f'avg: {sum(ts)/len(ts)} | total: {sum(ts)} | max: {max(ts)} | min: {min(ts)}'
-def test_speed(iters, lines=('test', '', 'Stopping server')):
-    print(f'{iters} iterations')
-    for i in lines:
-        print(f'Working with line "{i}"')
-        print(time_func(MCParser().check_line, iters, i))
